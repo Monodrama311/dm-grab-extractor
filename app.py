@@ -1,19 +1,17 @@
 """
-DM Logic — Grab Extractor Service
+DM Logic — Grab Extractor Service (v2)
 
-一个 Flask 服务,接受 URL,返回 metadata + 媒体直链。
-部署到 Render 免费层。
-
-文件结构:
-  app.py              ← 这个文件
-  requirements.txt    ← 见下方注释
-
-环境变量(Render Dashboard 设置):
-  INTERNAL_TOKEN      ← Worker 调本服务用的密钥(自己生成 32 位随机串)
+Bot-detection-resistant yt-dlp wrapper.
+Hardening:
+  - curl_cffi for Chrome TLS fingerprint (bypasses cloud-IP bot blocks)
+  - youtube extractor_args with multiple player clients (mweb/tv_simply/web_safari)
+  - realistic User-Agent
+  - retries with backoff
 """
 
 import os
 import logging
+import random
 from flask import Flask, request, jsonify
 import yt_dlp
 
@@ -23,21 +21,20 @@ log = logging.getLogger("grab")
 app = Flask(__name__)
 INTERNAL_TOKEN = os.environ.get("INTERNAL_TOKEN", "")
 
+UA_POOL = [
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+]
 
-# ─────────────────────────────────────────────
-# 健康检查(Render 用,也用来手动测)
-# ─────────────────────────────────────────────
+
 @app.route("/health")
 def health():
     return {"ok": True, "ytdlp_version": yt_dlp.version.__version__}
 
 
-# ─────────────────────────────────────────────
-# 主接口:抓取
-# ─────────────────────────────────────────────
 @app.route("/extract", methods=["POST"])
 def extract():
-    # 内部 token 校验
     if request.headers.get("X-Internal-Token") != INTERNAL_TOKEN:
         return jsonify({"error": "forbidden"}), 403
 
@@ -51,33 +48,63 @@ def extract():
         return jsonify({"ok": True, "data": result}), 200
     except yt_dlp.utils.DownloadError as e:
         log.warning("ytdlp_error url=%s err=%s", url, e)
-        return jsonify({"ok": False, "error": "extractor_failed", "detail": str(e)}), 502
+        return jsonify({"ok": False, "error": "extractor_failed", "detail": str(e)[:500]}), 502
     except Exception as e:
         log.exception("unexpected url=%s", url)
-        return jsonify({"ok": False, "error": "internal", "detail": str(e)}), 500
+        return jsonify({"ok": False, "error": "internal", "detail": str(e)[:500]}), 500
 
 
 def run_ytdlp(url: str) -> dict:
-    """提取元数据 + 媒体直链,不下载文件本身。"""
+    """Extract metadata + media URLs. Doesn't download files."""
+    ua = random.choice(UA_POOL)
+
     ydl_opts = {
         "skip_download": True,
         "quiet": True,
         "no_warnings": True,
         "extract_flat": False,
+        "retries": 3,
+        "fragment_retries": 3,
+        "http_headers": {
+            "User-Agent": ua,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Sec-Fetch-Mode": "navigate",
+        },
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["mweb", "tv_simply", "web_safari", "android"],
+                "skip": ["dash"],
+            },
+        },
     }
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
+    # Add Chrome TLS impersonation if curl_cffi is available
+    try:
+        from yt_dlp.networking.impersonate import ImpersonateTarget
+        ydl_opts["impersonate"] = ImpersonateTarget("chrome")
+    except Exception:
+        log.info("impersonate API unavailable, falling back to vanilla requests")
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as e:
+        if "impersonate" in str(e).lower() or "curl" in str(e).lower():
+            log.info("retry without impersonate")
+            ydl_opts.pop("impersonate", None)
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+        else:
+            raise
 
     return normalize(info)
 
 
 def normalize(info: dict) -> dict:
-    """yt-dlp 字段 → 统一格式。"""
     if not info:
         return {}
 
-    # 媒体类型
     if info.get("_type") == "playlist":
         media_type = "carousel"
     elif info.get("vcodec") and info.get("vcodec") != "none":
@@ -87,12 +114,10 @@ def normalize(info: dict) -> dict:
     else:
         media_type = "unknown"
 
-    # hashtags / mentions(简单从文本里抽)
     text = " ".join(filter(None, [info.get("title"), info.get("description")]))
     hashtags = sorted(set(t for t in text.split() if t.startswith("#")))
     mentions = sorted(set(t for t in text.split() if t.startswith("@")))
 
-    # 媒体 URL
     media_urls = []
     if info.get("formats"):
         for f in info["formats"]:
@@ -110,7 +135,6 @@ def normalize(info: dict) -> dict:
                 "vbr": f.get("vbr"),
             })
 
-    # 作者
     author_info = {
         "id": info.get("uploader_id") or info.get("channel_id"),
         "username": info.get("uploader") or info.get("channel"),
@@ -120,7 +144,6 @@ def normalize(info: dict) -> dict:
         "verified": info.get("channel_is_verified"),
     }
 
-    # 互动数据
     engagement = {
         "views": info.get("view_count"),
         "likes": info.get("like_count"),
@@ -128,7 +151,6 @@ def normalize(info: dict) -> dict:
         "shares": info.get("repost_count"),
     }
 
-    # 发布时间
     published_at = None
     if info.get("upload_date"):
         d = info["upload_date"]
@@ -161,27 +183,3 @@ def normalize(info: dict) -> dict:
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-
-
-# ============================================================
-# requirements.txt 内容(单独保存):
-# ============================================================
-# flask==3.0.0
-# yt-dlp>=2024.10.0
-# gunicorn==21.2.0
-# ============================================================
-
-# ============================================================
-# render.yaml(放仓库根目录):
-# ============================================================
-# services:
-#   - type: web
-#     name: dm-grab-extractor
-#     env: python
-#     plan: free
-#     buildCommand: "pip install -r requirements.txt && pip install --upgrade yt-dlp"
-#     startCommand: "gunicorn app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 2"
-#     envVars:
-#       - key: INTERNAL_TOKEN
-#         sync: false
-# ============================================================
