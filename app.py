@@ -1,17 +1,17 @@
 """
-DM Logic — Grab Extractor Service (v2)
+DM Logic — Grab Extractor Service (v3)
 
-Bot-detection-resistant yt-dlp wrapper.
 Hardening:
   - curl_cffi for Chrome TLS fingerprint (bypasses cloud-IP bot blocks)
-  - youtube extractor_args with multiple player clients (mweb/tv_simply/web_safari)
-  - realistic User-Agent
-  - retries with backoff
+  - Cookie support via YT_COOKIES env var (Netscape format) — fixes YouTube bot detection
+  - Multiple YouTube player clients
+  - Realistic User-Agent + retries
 """
 
 import os
 import logging
 import random
+import tempfile
 from flask import Flask, request, jsonify
 import yt_dlp
 
@@ -20,6 +20,16 @@ log = logging.getLogger("grab")
 
 app = Flask(__name__)
 INTERNAL_TOKEN = os.environ.get("INTERNAL_TOKEN", "")
+YT_COOKIES = os.environ.get("YT_COOKIES", "")  # Netscape format cookie file content
+
+# Write cookies to disk once at startup if provided
+COOKIE_FILE = None
+if YT_COOKIES.strip():
+    f = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False)
+    f.write(YT_COOKIES)
+    f.close()
+    COOKIE_FILE = f.name
+    log.info("YT cookies loaded from env var, %d bytes", len(YT_COOKIES))
 
 UA_POOL = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
@@ -30,7 +40,11 @@ UA_POOL = [
 
 @app.route("/health")
 def health():
-    return {"ok": True, "ytdlp_version": yt_dlp.version.__version__}
+    return {
+        "ok": True,
+        "ytdlp_version": yt_dlp.version.__version__,
+        "yt_cookies_loaded": COOKIE_FILE is not None,
+    }
 
 
 @app.route("/extract", methods=["POST"])
@@ -79,18 +93,23 @@ def run_ytdlp(url: str) -> dict:
         },
     }
 
-    # Add Chrome TLS impersonation if curl_cffi is available
+    # Cookie file (mostly for YouTube bot bypass)
+    if COOKIE_FILE:
+        ydl_opts["cookiefile"] = COOKIE_FILE
+
+    # Chrome TLS impersonation (curl_cffi)
     try:
         from yt_dlp.networking.impersonate import ImpersonateTarget
         ydl_opts["impersonate"] = ImpersonateTarget("chrome")
     except Exception:
-        log.info("impersonate API unavailable, falling back to vanilla requests")
+        log.info("impersonate API unavailable")
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
     except Exception as e:
-        if "impersonate" in str(e).lower() or "curl" in str(e).lower():
+        msg = str(e).lower()
+        if "impersonate" in msg or "curl" in msg:
             log.info("retry without impersonate")
             ydl_opts.pop("impersonate", None)
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
