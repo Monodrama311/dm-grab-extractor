@@ -1,4 +1,12 @@
-# Extractor — yt-dlp 服务
+# Extractor — yt-dlp service
+
+Current service version: **v4**.
+
+- Public YouTube videos use yt-dlp's `android_vr` client so extraction does
+  not depend on a personal Google account cookie or a manually rotated PO token.
+- `YT_COOKIES` remains optional and should only be used for content that
+  genuinely requires an account. Never commit cookie contents.
+- `/health` reports `service_version`, yt-dlp version, and whether cookies are loaded.
 
 部署到 Render(免费层),被 Worker 调用。
 

@@ -1,10 +1,10 @@
 """
-DM Logic — Grab Extractor Service (v3)
+DM Logic — Grab Extractor Service (v4)
 
 Hardening:
   - curl_cffi for Chrome TLS fingerprint (bypasses cloud-IP bot blocks)
-  - Cookie support via YT_COOKIES env var (Netscape format) — fixes YouTube bot detection
-  - Multiple YouTube player clients
+  - Cookie support via YT_COOKIES env var for account-gated videos
+  - Public YouTube videos use android_vr, which currently does not require a PO token
   - Realistic User-Agent + retries
 """
 
@@ -19,6 +19,7 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("grab")
 
 app = Flask(__name__)
+SERVICE_VERSION = "4.0"
 INTERNAL_TOKEN = os.environ.get("INTERNAL_TOKEN", "")
 YT_COOKIES = os.environ.get("YT_COOKIES", "")  # Netscape format cookie file content
 
@@ -42,6 +43,7 @@ UA_POOL = [
 def health():
     return {
         "ok": True,
+        "service_version": SERVICE_VERSION,
         "ytdlp_version": yt_dlp.version.__version__,
         "yt_cookies_loaded": COOKIE_FILE is not None,
     }
@@ -85,12 +87,11 @@ def run_ytdlp(url: str) -> dict:
             "Accept-Language": "en-US,en;q=0.9",
             "Sec-Fetch-Mode": "navigate",
         },
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["mweb", "tv_simply", "web_safari", "android"],
-                "skip": ["dash"],
-            },
-        },
+        # YouTube's web/mweb clients increasingly require per-video PO tokens.
+        # android_vr is the documented no-token public-video path. Keeping this
+        # list singular matters: a failing client can abort before yt-dlp tries
+        # a later fallback client.
+        "extractor_args": {"youtube": {"player_client": ["android_vr"]}},
     }
 
     # Cookie file (mostly for YouTube bot bypass)
@@ -116,6 +117,9 @@ def run_ytdlp(url: str) -> dict:
                 info = ydl.extract_info(url, download=False)
         else:
             raise
+
+    if not info or not info.get("formats"):
+        raise yt_dlp.utils.DownloadError("no playable media formats returned")
 
     return normalize(info)
 
