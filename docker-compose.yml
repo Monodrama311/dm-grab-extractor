@@ -1,0 +1,23 @@
+# dm-grab-extractor on the Hetzner box (Dispatch 031).
+# Bound to loopback: the service is reachable only through the Cloudflare
+# tunnel (cloudflared → localhost:8000), never directly from the internet.
+services:
+  extractor:
+    build: .
+    image: dm-grab-extractor:latest
+    container_name: dm-grab-extractor
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      - PORT=8000
+      # Must equal the dmlogic-web Worker secret EXTRACTOR_TOKEN (set in .env).
+      - INTERNAL_TOKEN=${INTERNAL_TOKEN:?set INTERNAL_TOKEN in .env}
+      # Optional cookies — NOT recommended (account-ban risk). Leave unset.
+      # - YT_COOKIES=${YT_COOKIES:-}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health').status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
