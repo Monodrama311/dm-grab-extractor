@@ -1,10 +1,12 @@
 # Extractor — yt-dlp service
 
-Current service version: **v5**.
+Current service version: **v5.1**.
 
 - Public YouTube videos use yt-dlp's recommended `mweb` client with the
   `bgutil-ytdlp-pot-provider` plugin. The provider generates a per-video proof
-  of origin token locally on Render; it does not use a YouTube account cookie.
+  of origin token locally on Render. The extractor also skips YouTube's blocked
+  webpage/config probes and goes directly through the player client; it does not
+  use a YouTube account cookie.
 - `YT_COOKIES` remains optional and should only be used for content that
   genuinely requires an account. Never commit cookie contents.
 - `/health` reports `service_version`, yt-dlp version, and whether cookies are loaded.

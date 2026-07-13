@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("grab")
 
 app = Flask(__name__)
-SERVICE_VERSION = "5.0"
+SERVICE_VERSION = "5.1"
 INTERNAL_TOKEN = os.environ.get("INTERNAL_TOKEN", "")
 YT_COOKIES = os.environ.get("YT_COOKIES", "")  # Netscape format cookie file content
 POT_PROVIDER_HOME = os.environ.get(
@@ -98,7 +98,10 @@ def run_ytdlp(url: str) -> dict:
         # client that does not normally require a PO token. The yt-dlp project
         # currently recommends mweb with a provider-generated, per-video token.
         "extractor_args": {
-            "youtube": {"player_client": ["mweb"]},
+            "youtube": {
+                "player_client": ["mweb"],
+                "player_skip": ["webpage", "configs"],
+            },
             "youtubepot-bgutilscript": {"server_home": [POT_PROVIDER_HOME]},
         },
     }
