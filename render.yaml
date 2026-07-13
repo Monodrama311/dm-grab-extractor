@@ -3,7 +3,7 @@ services:
     name: dm-grab-extractor
     env: python
     plan: free
-    buildCommand: "pip install --upgrade pip && pip install -r requirements.txt && pip install --upgrade --pre yt-dlp[default,curl-cffi]"
+    buildCommand: "bash build.sh"
     startCommand: "gunicorn app:app --bind 0.0.0.0:$PORT --timeout 180 --workers 2"
     envVars:
       - key: INTERNAL_TOKEN

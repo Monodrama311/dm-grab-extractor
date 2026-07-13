@@ -1,10 +1,10 @@
 """
-DM Logic — Grab Extractor Service (v4)
+DM Logic — Grab Extractor Service (v5)
 
 Hardening:
   - curl_cffi for Chrome TLS fingerprint (bypasses cloud-IP bot blocks)
   - Cookie support via YT_COOKIES env var for account-gated videos
-  - Public YouTube videos use android_vr, which currently does not require a PO token
+  - Public YouTube videos use yt-dlp's recommended mweb + PO Token provider path
   - Realistic User-Agent + retries
 """
 
@@ -19,9 +19,13 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("grab")
 
 app = Flask(__name__)
-SERVICE_VERSION = "4.0"
+SERVICE_VERSION = "5.0"
 INTERNAL_TOKEN = os.environ.get("INTERNAL_TOKEN", "")
 YT_COOKIES = os.environ.get("YT_COOKIES", "")  # Netscape format cookie file content
+POT_PROVIDER_HOME = os.environ.get(
+    "POT_PROVIDER_HOME",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), ".bgutil-provider", "server"),
+)
 
 # Write cookies to disk once at startup if provided
 COOKIE_FILE = None
@@ -46,6 +50,9 @@ def health():
         "service_version": SERVICE_VERSION,
         "ytdlp_version": yt_dlp.version.__version__,
         "yt_cookies_loaded": COOKIE_FILE is not None,
+        "po_token_provider_ready": os.path.isfile(
+            os.path.join(POT_PROVIDER_HOME, "build", "generate_once.js")
+        ),
     }
 
 
@@ -87,11 +94,13 @@ def run_ytdlp(url: str) -> dict:
             "Accept-Language": "en-US,en;q=0.9",
             "Sec-Fetch-Mode": "navigate",
         },
-        # YouTube's web/mweb clients increasingly require per-video PO tokens.
-        # android_vr is the documented no-token public-video path. Keeping this
-        # list singular matters: a failing client can abort before yt-dlp tries
-        # a later fallback client.
-        "extractor_args": {"youtube": {"player_client": ["android_vr"]}},
+        # Cloud-host IPs can still receive YouTube's bot challenge even on a
+        # client that does not normally require a PO token. The yt-dlp project
+        # currently recommends mweb with a provider-generated, per-video token.
+        "extractor_args": {
+            "youtube": {"player_client": ["mweb"]},
+            "youtubepot-bgutilscript": {"server_home": [POT_PROVIDER_HOME]},
+        },
     }
 
     # Cookie file (mostly for YouTube bot bypass)
